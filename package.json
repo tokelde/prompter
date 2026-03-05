@@ -1,0 +1,24 @@
+{
+  "name": "@tokelde/prompter",
+  "version": "0.4.0",
+  "description": "Bundle your repository into a single Markdown document for LLM prompts.",
+  "type": "module",
+  "bin": {
+    "prompter": "bin/prompter"
+  },
+  "files": [
+    "bin",
+    "src",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md"
+  ],
+  "scripts": {
+    "build": "cargo build --release && mkdir -p bin && cp target/release/prompter bin/prompter && chmod +x bin/prompter",
+    "postinstall": "npm run build",
+    "test": "npm run build && node --test test/**/*.test.mjs"
+  },
+  "devDependencies": {}
+}

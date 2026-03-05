@@ -1,0 +1,5 @@
+node_modules/
+target/
+prompter-output.md
+.npm/
+.DS_Store
