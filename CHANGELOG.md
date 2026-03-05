@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+* Add default verbose completion summary (`files_found`, `files_included`, output target, forced includes)
+* Add `--quiet` / `-q` to hide verbose completion output
+* Add extension filtering with `--find-format` and `--exclude-format`
+* Add `--include` to force specific files into snapshot, including files ignored by `.gitignore`
+* Add short flags for new filters and includes: `-i`, `-F`, and `-E`
+
 ## 0.4.0
 
 * Rewrite core CLI implementation in Rust

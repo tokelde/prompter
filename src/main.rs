@@ -25,6 +25,15 @@ struct Cli {
     #[arg(short, long = "exclude", value_name = "path-or-glob", action = ArgAction::Append)]
     exclude: Vec<String>,
 
+    #[arg(short = 'i', long = "include", value_name = "path", action = ArgAction::Append)]
+    include: Vec<String>,
+
+    #[arg(short = 'F', long = "find-format", value_name = "ext", action = ArgAction::Append)]
+    include_format: Vec<String>,
+
+    #[arg(short = 'E', long = "exclude-format", value_name = "ext", action = ArgAction::Append)]
+    exclude_format: Vec<String>,
+
     #[arg(long)]
     hidden: bool,
 
@@ -36,6 +45,9 @@ struct Cli {
 
     #[arg(long = "no-ignore", action = ArgAction::SetTrue)]
     no_ignore: bool,
+
+    #[arg(short = 'q', long = "quiet", action = ArgAction::SetTrue)]
+    quiet: bool,
 }
 
 #[derive(Clone)]
@@ -111,6 +123,38 @@ fn normalize_pattern(input: &str) -> String {
         normalized = normalized[1..].to_string();
     }
     normalized
+}
+
+fn split_multi_values(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| entry.to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn normalize_extension(input: &str) -> String {
+    let trimmed = input.trim().to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return trimmed;
+    }
+    if trimmed.starts_with('.') {
+        trimmed
+    } else {
+        format!(".{trimmed}")
+    }
+}
+
+fn file_extension(path: &str) -> Option<String> {
+    Path::new(path)
+        .extension()
+        .map(|ext| format!(".{}", ext.to_string_lossy().to_ascii_lowercase()))
 }
 
 fn has_glob(input: &str) -> bool {
@@ -318,6 +362,39 @@ fn is_inside_root(root: &Path, absolute_path: &Path) -> Option<String> {
     }
 }
 
+fn resolve_include_path(root: &Path, include_value: &str) -> Result<String, String> {
+    let normalized = normalize_pattern(include_value);
+    if normalized.is_empty() {
+        return Err("Include path cannot be empty".to_string());
+    }
+
+    let candidate = PathBuf::from(&normalized);
+    let absolute = if candidate.is_absolute() {
+        candidate
+    } else {
+        root.join(candidate)
+    };
+
+    let metadata = fs::metadata(&absolute)
+        .map_err(|error| format!("Could not read include path '{include_value}': {error}"))?;
+    if !metadata.is_file() {
+        return Err(format!("Include path '{include_value}' is not a file"));
+    }
+
+    is_inside_root(root, &absolute).ok_or_else(|| {
+        format!(
+            "Include path '{}' must be inside root '{}'",
+            include_value,
+            root.display()
+        )
+    })
+}
+
+fn print_verbose_summary(files_found: usize, created_target: &str) {
+    eprintln!("{files_found} files found");
+    eprintln!("{created_target} created");
+}
+
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
     let root = fs::canonicalize(Path::new(&cli.path))
@@ -326,17 +403,17 @@ fn run() -> Result<(), String> {
     let output_path = cli.out.unwrap_or_else(|| "prompter-output.md".to_string());
     let output_absolute = real_absolute_path(&PathBuf::from(&output_path))?;
 
-    let mut exclude_patterns: Vec<String> = cli
-        .exclude
-        .iter()
-        .flat_map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-                .map(|entry| entry.to_string())
-                .collect::<Vec<_>>()
-        })
+    let mut exclude_patterns = split_multi_values(&cli.exclude);
+    let include_patterns = split_multi_values(&cli.include);
+    let include_formats: Vec<String> = split_multi_values(&cli.include_format)
+        .into_iter()
+        .map(|value| normalize_extension(&value))
+        .filter(|value| !value.is_empty())
+        .collect();
+    let exclude_formats: Vec<String> = split_multi_values(&cli.exclude_format)
+        .into_iter()
+        .map(|value| normalize_extension(&value))
+        .filter(|value| !value.is_empty())
         .collect();
 
     if let Some(relative_output) = is_inside_root(&root, &output_absolute) {
@@ -346,10 +423,35 @@ fn run() -> Result<(), String> {
     let matcher = ExcludeMatcher::new(&exclude_patterns)?;
 
     let files = scan_files(&root, !cli.no_ignore, cli.hidden)?;
-    let filtered_files: Vec<String> = files
+    let mut filtered_files: Vec<String> = files
         .into_iter()
         .filter(|path| !matcher.is_excluded(path))
+        .filter(|path| {
+            if include_formats.is_empty() {
+                return true;
+            }
+            file_extension(path)
+                .map(|ext| include_formats.iter().any(|candidate| candidate == &ext))
+                .unwrap_or(false)
+        })
+        .filter(|path| {
+            if exclude_formats.is_empty() {
+                return true;
+            }
+            file_extension(path)
+                .map(|ext| !exclude_formats.iter().any(|candidate| candidate == &ext))
+                .unwrap_or(true)
+        })
         .collect();
+
+    for include_pattern in include_patterns {
+        let include_path = resolve_include_path(&root, &include_pattern)?;
+        if !filtered_files.iter().any(|existing| existing == &include_path) {
+            filtered_files.push(include_path);
+        }
+    }
+    filtered_files.sort();
+    filtered_files.dedup();
 
     let snapshots = load_snapshot_files(&root, &filtered_files, cli.contains.as_deref());
     let markdown = format_snapshot(&snapshots);
@@ -364,10 +466,16 @@ fn run() -> Result<(), String> {
         io::stdout()
             .flush()
             .map_err(|error| format!("Could not flush stdout: {error}"))?;
+        if !cli.quiet {
+            print_verbose_summary(snapshots.len(), "stdout");
+        }
         return Ok(());
     }
 
     fs::write(&output_path, output).map_err(|error| format!("Could not write output file: {error}"))?;
+    if !cli.quiet {
+        print_verbose_summary(snapshots.len(), &output_path);
+    }
     Ok(())
 }
 

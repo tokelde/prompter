@@ -1,6 +1,6 @@
 {
   "name": "@tokelde/prompter",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Bundle your repository into a single Markdown document for LLM prompts.",
   "type": "module",
   "bin": {

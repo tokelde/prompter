@@ -117,3 +117,73 @@ test("cli exclude patterns support folders and globs", async () => {
   assert.doesNotMatch(globExclude.stdout, /## src\/scan\.ts/);
   assert.match(globExclude.stdout, /## README\.md/);
 });
+
+test("cli supports find-format and exclude-format filters", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "prompter-test-"));
+  await writeFile(path.join(root, "main.py"), "print('x')", "utf8");
+  await writeFile(path.join(root, "helper.js"), "console.log('x')", "utf8");
+  await writeFile(path.join(root, "notes.md"), "hello", "utf8");
+
+  const includeOnlyPy = spawnSync(
+    cliPath,
+    [root, "--raw", "--find-format", "py"],
+    { encoding: "utf8", cwd: root }
+  );
+
+  assert.equal(includeOnlyPy.status, 0, includeOnlyPy.stderr);
+  assert.match(includeOnlyPy.stdout, /## main\.py/);
+  assert.doesNotMatch(includeOnlyPy.stdout, /## helper\.js/);
+  assert.doesNotMatch(includeOnlyPy.stdout, /## notes\.md/);
+
+  const excludeJs = spawnSync(
+    cliPath,
+    [root, "--raw", "--exclude-format", ".js"],
+    { encoding: "utf8", cwd: root }
+  );
+
+  assert.equal(excludeJs.status, 0, excludeJs.stderr);
+  assert.match(excludeJs.stdout, /## main\.py/);
+  assert.match(excludeJs.stdout, /## notes\.md/);
+  assert.doesNotMatch(excludeJs.stdout, /## helper\.js/);
+});
+
+test("cli include can force files excluded by default scanning rules", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "prompter-test-"));
+  await writeFile(path.join(root, ".env.local"), "forced", "utf8");
+  await writeFile(path.join(root, "visible.txt"), "visible", "utf8");
+
+  const defaultResult = spawnSync(cliPath, [root, "--raw"], {
+    encoding: "utf8",
+    cwd: root,
+  });
+  assert.equal(defaultResult.status, 0, defaultResult.stderr);
+  assert.match(defaultResult.stdout, /## visible\.txt/);
+  assert.doesNotMatch(defaultResult.stdout, /## \.env\.local/);
+
+  const includeForced = spawnSync(
+    cliPath,
+    [root, "--raw", "--include", ".env.local"],
+    { encoding: "utf8", cwd: root }
+  );
+  assert.equal(includeForced.status, 0, includeForced.stderr);
+  assert.match(includeForced.stdout, /## \.env\.local/);
+});
+
+test("cli verbose is enabled by default and hidden with --quiet", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "prompter-test-"));
+  await writeFile(path.join(root, "one.txt"), "1", "utf8");
+
+  const verboseResult = spawnSync(cliPath, [root, "--raw"], {
+    encoding: "utf8",
+    cwd: root,
+  });
+  assert.equal(verboseResult.status, 0, verboseResult.stderr);
+  assert.match(verboseResult.stderr, /1 files found\nstdout created/);
+
+  const quietResult = spawnSync(cliPath, [root, "--raw", "--quiet"], {
+    encoding: "utf8",
+    cwd: root,
+  });
+  assert.equal(quietResult.status, 0, quietResult.stderr);
+  assert.equal(quietResult.stderr, "");
+});
