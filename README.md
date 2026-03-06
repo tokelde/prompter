@@ -8,14 +8,16 @@
 
 ```bash
 npx @tokelde/prompter
+npx @tokelde/prompter app/services
 npx @tokelde/prompter -c "createUser"
-npx @tokelde/prompter -p "You are reviewing this repository. Create clear authentication documentation."
+npx @tokelde/prompter -p "Create a technical documentation for authentication."
 ```
 
 ## Advanced Usage
 
 ```bash
 npx @tokelde/prompter -o snapshot.md
+npx @tokelde/prompter src/server.ts src/routes/auth.ts package.json
 npx @tokelde/prompter -e dist -e "README.md,.gitignore"
 npx @tokelde/prompter -F py -E js
 npx @tokelde/prompter -i .env.local
@@ -26,6 +28,10 @@ npx @tokelde/prompter --quiet
 
 ## Options
 
+- `[path-or-file ...]`: Optional positional inputs.
+  - No value: defaults to current directory (`.`).
+  - One directory path (relative or absolute): scans that folder and applies nested ignore rules.
+  - One or more file paths (relative and/or absolute): includes only those files.
 - `-e, --exclude <path-or-glob>`: Exclude a file/folder/glob. Repeat the flag or pass comma-separated values.
 - `-i, --include <path>`: Force-include specific file(s), even when excluded by ignore rules. Repeat or comma-separate values.
 - `-F, --find-format <ext>`: Include only files with these extensions (example: `py` or `.py`). Repeat or comma-separate values.

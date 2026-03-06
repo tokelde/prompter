@@ -2,6 +2,7 @@ use clap::{ArgAction, Parser};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -13,8 +14,8 @@ use std::path::{Path, PathBuf};
     about = "Bundle your repository into a single Markdown document for LLM prompts."
 )]
 struct Cli {
-    #[arg(default_value = ".")]
-    path: String,
+    #[arg(value_name = "path-or-file")]
+    inputs: Vec<String>,
 
     #[arg(short, long)]
     contains: Option<String>,
@@ -60,6 +61,17 @@ struct ExcludeMatcher {
     globs: GlobSet,
     exact_files: Vec<String>,
     dir_prefixes: Vec<String>,
+}
+
+#[derive(Clone)]
+struct InputFile {
+    path: String,
+    absolute: PathBuf,
+}
+
+enum InputTarget {
+    Directory(PathBuf),
+    Files(Vec<InputFile>),
 }
 
 impl ExcludeMatcher {
@@ -137,6 +149,15 @@ fn split_multi_values(values: &[String]) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+fn normalize_display_path(input: &Path) -> String {
+    let path = input.to_string_lossy().replace('\\', "/");
+    if path.is_empty() {
+        ".".to_string()
+    } else {
+        path
+    }
 }
 
 fn normalize_extension(input: &str) -> String {
@@ -244,6 +265,30 @@ fn load_snapshot_files(root: &Path, files: &[String], contains: Option<&str>) ->
     snapshots
 }
 
+fn load_snapshot_files_from_inputs(files: &[InputFile], contains: Option<&str>) -> Vec<SnapshotFile> {
+    let mut snapshots = Vec::new();
+
+    for input in files {
+        let content = match fs::read_to_string(&input.absolute) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+
+        if let Some(term) = contains {
+            if !content.contains(term) {
+                continue;
+            }
+        }
+
+        snapshots.push(SnapshotFile {
+            path: input.path.clone(),
+            content,
+        });
+    }
+
+    snapshots
+}
+
 fn language_by_extension() -> HashMap<&'static str, &'static str> {
     HashMap::from([
         (".ts", "ts"),
@@ -309,16 +354,18 @@ fn create_fence(content: &str) -> String {
     "`".repeat(std::cmp::max(3, longest + 1))
 }
 
-fn format_snapshot(files: &[SnapshotFile]) -> String {
+fn command_used() -> String {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.is_empty() {
+        ".".to_string()
+    } else {
+        args.join(" ")
+    }
+}
+
+fn format_snapshot(files: &[SnapshotFile], command: &str) -> String {
     let language_map = language_by_extension();
-    let mut lines = vec![
-        "# Repository Snapshot".to_string(),
-        String::new(),
-        format!("Files included: {}", files.len()),
-        String::new(),
-        "---".to_string(),
-        String::new(),
-    ];
+    let mut lines = vec![format!("# `{}` snapshot", command), String::new()];
 
     for snapshot in files {
         let language = detect_language(&snapshot.path, &language_map);
@@ -329,8 +376,6 @@ fn format_snapshot(files: &[SnapshotFile]) -> String {
         lines.push(format!("{}{}", fence, language));
         lines.push(snapshot.content.clone());
         lines.push(fence);
-        lines.push(String::new());
-        lines.push("---".to_string());
         lines.push(String::new());
     }
 
@@ -390,6 +435,68 @@ fn resolve_include_path(root: &Path, include_value: &str) -> Result<String, Stri
     })
 }
 
+fn resolve_input_target(inputs: &[String]) -> Result<InputTarget, String> {
+    let raw_inputs = if inputs.is_empty() {
+        vec![".".to_string()]
+    } else {
+        inputs.to_vec()
+    };
+
+    let cwd = fs::canonicalize(Path::new("."))
+        .map_err(|error| format!("Could not resolve current directory: {error}"))?;
+    let mut file_inputs = Vec::new();
+    let mut directory_inputs = Vec::new();
+
+    for value in raw_inputs {
+        let candidate = PathBuf::from(&value);
+        let absolute = if candidate.is_absolute() {
+            candidate
+        } else {
+            cwd.join(candidate)
+        };
+        let absolute = fs::canonicalize(&absolute)
+            .map_err(|error| format!("Could not resolve input path '{}': {error}", value))?;
+        let metadata = fs::metadata(&absolute)
+            .map_err(|error| format!("Could not read input path '{}': {error}", value))?;
+
+        if metadata.is_dir() {
+            directory_inputs.push(absolute);
+            continue;
+        }
+
+        if metadata.is_file() {
+            let display = if Path::new(&value).is_absolute() {
+                normalize_display_path(&absolute)
+            } else {
+                normalize_pattern(&value)
+            };
+            file_inputs.push(InputFile {
+                path: display,
+                absolute,
+            });
+            continue;
+        }
+
+        return Err(format!("Input path '{}' is neither a file nor directory", value));
+    }
+
+    if !directory_inputs.is_empty() && !file_inputs.is_empty() {
+        return Err("Cannot mix directory and file positional inputs".to_string());
+    }
+
+    if directory_inputs.len() > 1 {
+        return Err("Please provide only one directory path".to_string());
+    }
+
+    if let Some(directory) = directory_inputs.into_iter().next() {
+        return Ok(InputTarget::Directory(directory));
+    }
+
+    file_inputs.sort_by(|left, right| left.path.cmp(&right.path));
+    file_inputs.dedup_by(|left, right| left.absolute == right.absolute);
+    Ok(InputTarget::Files(file_inputs))
+}
+
 fn print_verbose_summary(files_found: usize, created_target: &str) {
     eprintln!("{files_found} files found");
     eprintln!("{created_target} created");
@@ -397,8 +504,7 @@ fn print_verbose_summary(files_found: usize, created_target: &str) {
 
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
-    let root = fs::canonicalize(Path::new(&cli.path))
-        .map_err(|error| format!("Could not resolve root path: {error}"))?;
+    let target = resolve_input_target(&cli.inputs)?;
 
     let output_path = cli.out.unwrap_or_else(|| "prompter-output.md".to_string());
     let output_absolute = real_absolute_path(&PathBuf::from(&output_path))?;
@@ -416,45 +522,50 @@ fn run() -> Result<(), String> {
         .filter(|value| !value.is_empty())
         .collect();
 
-    if let Some(relative_output) = is_inside_root(&root, &output_absolute) {
-        exclude_patterns.push(relative_output);
-    }
-
-    let matcher = ExcludeMatcher::new(&exclude_patterns)?;
-
-    let files = scan_files(&root, !cli.no_ignore, cli.hidden)?;
-    let mut filtered_files: Vec<String> = files
-        .into_iter()
-        .filter(|path| !matcher.is_excluded(path))
-        .filter(|path| {
-            if include_formats.is_empty() {
-                return true;
+    let snapshots = match target {
+        InputTarget::Directory(root) => {
+            if let Some(relative_output) = is_inside_root(&root, &output_absolute) {
+                exclude_patterns.push(relative_output);
             }
-            file_extension(path)
-                .map(|ext| include_formats.iter().any(|candidate| candidate == &ext))
-                .unwrap_or(false)
-        })
-        .filter(|path| {
-            if exclude_formats.is_empty() {
-                return true;
-            }
-            file_extension(path)
-                .map(|ext| !exclude_formats.iter().any(|candidate| candidate == &ext))
-                .unwrap_or(true)
-        })
-        .collect();
 
-    for include_pattern in include_patterns {
-        let include_path = resolve_include_path(&root, &include_pattern)?;
-        if !filtered_files.iter().any(|existing| existing == &include_path) {
-            filtered_files.push(include_path);
+            let matcher = ExcludeMatcher::new(&exclude_patterns)?;
+
+            let files = scan_files(&root, !cli.no_ignore, cli.hidden)?;
+            let mut filtered_files: Vec<String> = files
+                .into_iter()
+                .filter(|path| !matcher.is_excluded(path))
+                .filter(|path| {
+                    if include_formats.is_empty() {
+                        return true;
+                    }
+                    file_extension(path)
+                        .map(|ext| include_formats.iter().any(|candidate| candidate == &ext))
+                        .unwrap_or(false)
+                })
+                .filter(|path| {
+                    if exclude_formats.is_empty() {
+                        return true;
+                    }
+                    file_extension(path)
+                        .map(|ext| !exclude_formats.iter().any(|candidate| candidate == &ext))
+                        .unwrap_or(true)
+                })
+                .collect();
+
+            for include_pattern in include_patterns {
+                let include_path = resolve_include_path(&root, &include_pattern)?;
+                if !filtered_files.iter().any(|existing| existing == &include_path) {
+                    filtered_files.push(include_path);
+                }
+            }
+            filtered_files.sort();
+            filtered_files.dedup();
+
+            load_snapshot_files(&root, &filtered_files, cli.contains.as_deref())
         }
-    }
-    filtered_files.sort();
-    filtered_files.dedup();
-
-    let snapshots = load_snapshot_files(&root, &filtered_files, cli.contains.as_deref());
-    let markdown = format_snapshot(&snapshots);
+        InputTarget::Files(files) => load_snapshot_files_from_inputs(&files, cli.contains.as_deref()),
+    };
+    let markdown = format_snapshot(&snapshots, &command_used());
     let output = if let Some(top_prompt) = cli.top_prompt {
         format!("{top_prompt}\n\n{markdown}")
     } else {

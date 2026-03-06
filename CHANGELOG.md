@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+
+* Add positional input support for paths and files:
+  * `prompter` and `prompter .` default to current directory scanning
+  * `prompter /absolute/path` scans any target folder by absolute path
+  * `prompter <file...>` includes only explicit files (relative and/or absolute)
+* Keep nested ignore-file behavior during folder scans (`.gitignore` and parent ignore rules)
+* Add integration tests for default positional behavior and explicit file-only mode
+
 ## 0.5.0
 
 * Add default verbose completion summary (`files_found`, `files_included`, output target, forced includes)

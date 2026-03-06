@@ -24,12 +24,27 @@ test("cli raw mode writes to stdout, prepends top prompt, and respects excludes"
   );
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^TOP HEADER\n\n# Repository Snapshot/);
+  assert.match(result.stdout, /^TOP HEADER\n\n# `.*` snapshot/);
+  assert.doesNotMatch(result.stdout, /Files included:/);
+  assert.doesNotMatch(result.stdout, /^---$/m);
   assert.match(result.stdout, /## keep\.txt/);
   assert.doesNotMatch(result.stdout, /## skip\.txt/);
 
   const defaultOutputPath = path.join(root, "prompter-output.md");
   await assert.rejects(access(defaultOutputPath, constants.F_OK), /ENOENT/);
+});
+
+test("cli defaults to current directory when no positional path is provided", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "prompter-test-"));
+  await writeFile(path.join(root, "cwd-default.txt"), "yes", "utf8");
+
+  const result = spawnSync(cliPath, ["--raw"], {
+    encoding: "utf8",
+    cwd: root,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /## cwd-default\.txt/);
 });
 
 test("cli excludes hidden files by default and includes them with --hidden", async () => {
@@ -167,6 +182,31 @@ test("cli include can force files excluded by default scanning rules", async () 
   );
   assert.equal(includeForced.status, 0, includeForced.stderr);
   assert.match(includeForced.stdout, /## \.env\.local/);
+});
+
+test("cli positional file inputs include only explicit files", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "prompter-test-"));
+  await mkdir(path.join(root, "ext"), { recursive: true });
+
+  await writeFile(path.join(root, "main.py"), "print('main')", "utf8");
+  await writeFile(path.join(root, "ext", "super.py"), "print('super')", "utf8");
+  await writeFile(path.join(root, "skip.ts"), "console.log('skip')", "utf8");
+  await writeFile(path.join(root, "super.ts"), "console.log('local')", "utf8");
+
+  const result = spawnSync(
+    cliPath,
+    [path.join(root, "main.py"), path.join(root, "ext", "super.py"), "super.ts", "--raw"],
+    {
+      encoding: "utf8",
+      cwd: root,
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /## .*main\.py/);
+  assert.match(result.stdout, /## .*ext\/super\.py/);
+  assert.match(result.stdout, /## super\.ts/);
+  assert.doesNotMatch(result.stdout, /## skip\.ts/);
 });
 
 test("cli verbose is enabled by default and hidden with --quiet", async () => {
