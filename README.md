@@ -30,8 +30,9 @@ npx @tokelde/prompter --quiet
 
 - `[path-or-file ...]`: Optional positional inputs.
   - No value: defaults to current directory (`.`).
-  - One directory path (relative or absolute): scans that folder and applies nested ignore rules.
+  - One or more directory paths (relative or absolute): scans each folder and applies nested ignore rules.
   - One or more file paths (relative and/or absolute): includes only those files.
+  - You can mix folders and files in the same command.
 - `-e, --exclude <path-or-glob>`: Exclude a file/folder/glob. Repeat the flag or pass comma-separated values.
 - `-i, --include <path>`: Force-include specific file(s), even when excluded by ignore rules. Repeat or comma-separate values.
 - `-F, --find-format <ext>`: Include only files with these extensions (example: `py` or `.py`). Repeat or comma-separate values.

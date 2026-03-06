@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1
+
+* Support mixed positional inputs (folders and files together in one command)
+* Keep per-folder ignore handling when scanning multiple directories
+* Update README examples for relative folder path usage (`app/services`)
+
 ## 0.6.0
 
 * Add positional input support for paths and files:

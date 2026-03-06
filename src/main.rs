@@ -69,9 +69,15 @@ struct InputFile {
     absolute: PathBuf,
 }
 
-enum InputTarget {
-    Directory(PathBuf),
-    Files(Vec<InputFile>),
+#[derive(Clone)]
+struct InputDirectory {
+    path: String,
+    absolute: PathBuf,
+}
+
+struct InputTarget {
+    directories: Vec<InputDirectory>,
+    files: Vec<InputFile>,
 }
 
 impl ExcludeMatcher {
@@ -238,31 +244,6 @@ fn scan_files(root: &Path, respect_gitignore: bool, include_hidden: bool) -> Res
 
     files.sort();
     Ok(files)
-}
-
-fn load_snapshot_files(root: &Path, files: &[String], contains: Option<&str>) -> Vec<SnapshotFile> {
-    let mut snapshots = Vec::new();
-
-    for relative_path in files {
-        let absolute_path = root.join(relative_path);
-        let content = match fs::read_to_string(&absolute_path) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-
-        if let Some(term) = contains {
-            if !content.contains(term) {
-                continue;
-            }
-        }
-
-        snapshots.push(SnapshotFile {
-            path: relative_path.clone(),
-            content,
-        });
-    }
-
-    snapshots
 }
 
 fn load_snapshot_files_from_inputs(files: &[InputFile], contains: Option<&str>) -> Vec<SnapshotFile> {
@@ -435,6 +416,36 @@ fn resolve_include_path(root: &Path, include_value: &str) -> Result<String, Stri
     })
 }
 
+fn resolve_input_file(cwd: &Path, value: &str) -> Result<InputFile, String> {
+    let candidate = PathBuf::from(value);
+    let absolute = if candidate.is_absolute() {
+        candidate.clone()
+    } else {
+        cwd.join(&candidate)
+    };
+    let absolute = fs::canonicalize(&absolute)
+        .map_err(|error| format!("Could not resolve input path '{}': {error}", value))?;
+    let metadata = fs::metadata(&absolute)
+        .map_err(|error| format!("Could not read input path '{}': {error}", value))?;
+    if !metadata.is_file() {
+        return Err(format!("Input path '{}' is not a file", value));
+    }
+
+    let mut display = if candidate.is_absolute() {
+        normalize_display_path(&absolute)
+    } else {
+        normalize_pattern(value)
+    };
+    if display.is_empty() {
+        display = ".".to_string();
+    }
+
+    Ok(InputFile {
+        path: display,
+        absolute,
+    })
+}
+
 fn resolve_input_target(inputs: &[String]) -> Result<InputTarget, String> {
     let raw_inputs = if inputs.is_empty() {
         vec![".".to_string()]
@@ -444,15 +455,15 @@ fn resolve_input_target(inputs: &[String]) -> Result<InputTarget, String> {
 
     let cwd = fs::canonicalize(Path::new("."))
         .map_err(|error| format!("Could not resolve current directory: {error}"))?;
-    let mut file_inputs = Vec::new();
-    let mut directory_inputs = Vec::new();
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
 
     for value in raw_inputs {
         let candidate = PathBuf::from(&value);
         let absolute = if candidate.is_absolute() {
-            candidate
+            candidate.clone()
         } else {
-            cwd.join(candidate)
+            cwd.join(&candidate)
         };
         let absolute = fs::canonicalize(&absolute)
             .map_err(|error| format!("Could not resolve input path '{}': {error}", value))?;
@@ -460,46 +471,48 @@ fn resolve_input_target(inputs: &[String]) -> Result<InputTarget, String> {
             .map_err(|error| format!("Could not read input path '{}': {error}", value))?;
 
         if metadata.is_dir() {
-            directory_inputs.push(absolute);
-            continue;
-        }
-
-        if metadata.is_file() {
-            let display = if Path::new(&value).is_absolute() {
+            let mut display = if candidate.is_absolute() {
                 normalize_display_path(&absolute)
             } else {
                 normalize_pattern(&value)
             };
-            file_inputs.push(InputFile {
+            if display.is_empty() {
+                display = ".".to_string();
+            }
+            directories.push(InputDirectory {
                 path: display,
                 absolute,
             });
             continue;
         }
 
+        if metadata.is_file() {
+            files.push(resolve_input_file(&cwd, &value)?);
+            continue;
+        }
+
         return Err(format!("Input path '{}' is neither a file nor directory", value));
     }
 
-    if !directory_inputs.is_empty() && !file_inputs.is_empty() {
-        return Err("Cannot mix directory and file positional inputs".to_string());
-    }
+    directories.sort_by(|left, right| left.path.cmp(&right.path));
+    directories.dedup_by(|left, right| left.absolute == right.absolute);
 
-    if directory_inputs.len() > 1 {
-        return Err("Please provide only one directory path".to_string());
-    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    files.dedup_by(|left, right| left.absolute == right.absolute);
 
-    if let Some(directory) = directory_inputs.into_iter().next() {
-        return Ok(InputTarget::Directory(directory));
-    }
-
-    file_inputs.sort_by(|left, right| left.path.cmp(&right.path));
-    file_inputs.dedup_by(|left, right| left.absolute == right.absolute);
-    Ok(InputTarget::Files(file_inputs))
+    Ok(InputTarget { directories, files })
 }
 
 fn print_verbose_summary(files_found: usize, created_target: &str) {
     eprintln!("{files_found} files found");
     eprintln!("{created_target} created");
+}
+
+fn with_prefix(prefix: &str, relative: &str) -> String {
+    if prefix == "." {
+        return format!("./{relative}");
+    }
+    format!("{}/{}", prefix.trim_end_matches('/'), relative)
 }
 
 fn run() -> Result<(), String> {
@@ -509,7 +522,7 @@ fn run() -> Result<(), String> {
     let output_path = cli.out.unwrap_or_else(|| "prompter-output.md".to_string());
     let output_absolute = real_absolute_path(&PathBuf::from(&output_path))?;
 
-    let mut exclude_patterns = split_multi_values(&cli.exclude);
+    let exclude_patterns = split_multi_values(&cli.exclude);
     let include_patterns = split_multi_values(&cli.include);
     let include_formats: Vec<String> = split_multi_values(&cli.include_format)
         .into_iter()
@@ -522,49 +535,72 @@ fn run() -> Result<(), String> {
         .filter(|value| !value.is_empty())
         .collect();
 
-    let snapshots = match target {
-        InputTarget::Directory(root) => {
-            if let Some(relative_output) = is_inside_root(&root, &output_absolute) {
-                exclude_patterns.push(relative_output);
-            }
+    let matcher = ExcludeMatcher::new(&exclude_patterns)?;
+    let has_multiple_sources = target.directories.len() + target.files.len() > 1;
+    let mut resolved_inputs = target.files.clone();
 
-            let matcher = ExcludeMatcher::new(&exclude_patterns)?;
-
-            let files = scan_files(&root, !cli.no_ignore, cli.hidden)?;
-            let mut filtered_files: Vec<String> = files
-                .into_iter()
-                .filter(|path| !matcher.is_excluded(path))
-                .filter(|path| {
-                    if include_formats.is_empty() {
-                        return true;
-                    }
-                    file_extension(path)
-                        .map(|ext| include_formats.iter().any(|candidate| candidate == &ext))
-                        .unwrap_or(false)
-                })
-                .filter(|path| {
-                    if exclude_formats.is_empty() {
-                        return true;
-                    }
-                    file_extension(path)
-                        .map(|ext| !exclude_formats.iter().any(|candidate| candidate == &ext))
-                        .unwrap_or(true)
-                })
-                .collect();
-
-            for include_pattern in include_patterns {
-                let include_path = resolve_include_path(&root, &include_pattern)?;
-                if !filtered_files.iter().any(|existing| existing == &include_path) {
-                    filtered_files.push(include_path);
-                }
-            }
-            filtered_files.sort();
-            filtered_files.dedup();
-
-            load_snapshot_files(&root, &filtered_files, cli.contains.as_deref())
+    for directory in &target.directories {
+        let mut directory_files = scan_files(&directory.absolute, !cli.no_ignore, cli.hidden)?;
+        if let Some(relative_output) = is_inside_root(&directory.absolute, &output_absolute) {
+            directory_files.retain(|path| path != &relative_output);
         }
-        InputTarget::Files(files) => load_snapshot_files_from_inputs(&files, cli.contains.as_deref()),
-    };
+
+        for relative in directory_files {
+            if matcher.is_excluded(&relative) {
+                continue;
+            }
+            if !include_formats.is_empty()
+                && file_extension(&relative)
+                    .map(|ext| include_formats.iter().any(|candidate| candidate == &ext))
+                    .unwrap_or(false)
+                    == false
+            {
+                continue;
+            }
+            if !exclude_formats.is_empty()
+                && file_extension(&relative)
+                    .map(|ext| exclude_formats.iter().any(|candidate| candidate == &ext))
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let path = if has_multiple_sources {
+                with_prefix(&directory.path, &relative)
+            } else {
+                relative.clone()
+            };
+            resolved_inputs.push(InputFile {
+                path,
+                absolute: directory.absolute.join(relative),
+            });
+        }
+    }
+
+    if !include_patterns.is_empty() {
+        if target.directories.len() != 1 || !target.files.is_empty() {
+            return Err("--include requires exactly one directory positional input".to_string());
+        }
+
+        let root = &target.directories[0].absolute;
+        for include_pattern in include_patterns {
+            let relative = resolve_include_path(root, &include_pattern)?;
+            let path = if has_multiple_sources {
+                with_prefix(&target.directories[0].path, &relative)
+            } else {
+                relative.clone()
+            };
+            let absolute = root.join(relative);
+            if !resolved_inputs.iter().any(|existing| existing.absolute == absolute) {
+                resolved_inputs.push(InputFile { path, absolute });
+            }
+        }
+    }
+
+    resolved_inputs.sort_by(|left, right| left.path.cmp(&right.path));
+    resolved_inputs.dedup_by(|left, right| left.absolute == right.absolute);
+
+    let snapshots = load_snapshot_files_from_inputs(&resolved_inputs, cli.contains.as_deref());
     let markdown = format_snapshot(&snapshots, &command_used());
     let output = if let Some(top_prompt) = cli.top_prompt {
         format!("{top_prompt}\n\n{markdown}")

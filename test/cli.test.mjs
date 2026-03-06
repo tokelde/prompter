@@ -209,6 +209,28 @@ test("cli positional file inputs include only explicit files", async () => {
   assert.doesNotMatch(result.stdout, /## skip\.ts/);
 });
 
+test("cli supports mixing multiple folders and files in positional inputs", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "prompter-test-"));
+  await mkdir(path.join(root, "app"), { recursive: true });
+  await mkdir(path.join(root, "lib"), { recursive: true });
+
+  await writeFile(path.join(root, "app", "a.ts"), "export const a = 1;", "utf8");
+  await writeFile(path.join(root, "lib", "b.py"), "print('b')", "utf8");
+  await writeFile(path.join(root, "note.md"), "hello", "utf8");
+  await writeFile(path.join(root, "other.txt"), "skip", "utf8");
+
+  const result = spawnSync(cliPath, ["app", "lib", "note.md", "--raw"], {
+    encoding: "utf8",
+    cwd: root,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /## app\/a\.ts/);
+  assert.match(result.stdout, /## lib\/b\.py/);
+  assert.match(result.stdout, /## note\.md/);
+  assert.doesNotMatch(result.stdout, /## other\.txt/);
+});
+
 test("cli verbose is enabled by default and hidden with --quiet", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "prompter-test-"));
   await writeFile(path.join(root, "one.txt"), "1", "utf8");
