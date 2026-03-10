@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.2
+
+* Clarify README positioning to mention LLMs and agents explicitly
+* Document `--contains` / `-c` in the README options list
+
 ## 0.6.1
 
 * Support mixed positional inputs (folders and files together in one command)

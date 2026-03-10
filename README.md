@@ -2,7 +2,7 @@
 
 > Turn an entire repository into one clean Markdown snapshot for LLM prompts.
 
-`prompter` scans your project, respects ignore rules, and emits a structured file-by-file dump optimized for review, refactor, or debugging prompts.
+`prompter` scans your project, respects ignore rules, and emits a structured file-by-file dump optimized for review, refactor, or debugging by an LLM or agent.
 
 ## Basic Usage
 
@@ -37,6 +37,7 @@ npx @tokelde/prompter --quiet
 - `-i, --include <path>`: Force-include specific file(s), even when excluded by ignore rules. Repeat or comma-separate values.
 - `-F, --find-format <ext>`: Include only files with these extensions (example: `py` or `.py`). Repeat or comma-separate values.
 - `-E, --exclude-format <ext>`: Exclude files with these extensions (example: `js` or `.js`). Repeat or comma-separate values.
+- `-c, --contains <text>`: Include only files whose content contains the provided text.
 - `--hidden`: Include hidden files (dotfiles). By default, hidden files are not included.
 - `-p, --top-prompt <text>`: Prepend text at the very top of the output.
 - `-r, --raw`: Print output to terminal (stdout) and do not create an output file.
